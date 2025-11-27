@@ -1,0 +1,492 @@
+import { useState, useEffect, useRef } from 'react';
+import { EmergencyAlert } from '../App';
+import { AlertTriangle, MapPin, Clock, Navigation, Bell, BellOff, Map, List } from 'lucide-react';
+import { useLanguage } from '../LanguageContext';
+import { getTranslation } from '../translations';
+
+interface CitizenViewProps {
+  alerts: EmergencyAlert[];
+}
+
+export function CitizenView({ alerts }: CitizenViewProps) {
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number; name: string } | null>({
+    lat: 12.9716,
+    lng: 77.5946,
+    name: 'Bangalore City Center'
+  });
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [viewMode, setViewMode] = useState<'list' | 'map'>('map');
+  const mapRef = useRef<any>(null);
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const markersRef = useRef<any[]>([]);
+  const { language } = useLanguage();
+  const t = (key: keyof typeof import('../translations').translations.en) => getTranslation(language, key);
+
+  // Load Leaflet
+  useEffect(() => {
+    if (!document.getElementById('leaflet-css')) {
+      const link = document.createElement('link');
+      link.id = 'leaflet-css';
+      link.rel = 'stylesheet';
+      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      document.head.appendChild(link);
+    }
+
+    if (!window.L) {
+      const script = document.createElement('script');
+      script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+      script.onload = initializeMap;
+      document.body.appendChild(script);
+    } else {
+      initializeMap();
+    }
+
+    return () => {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+  }, []);
+
+  const initializeMap = () => {
+    if (!mapContainerRef.current || mapRef.current || viewMode !== 'map') return;
+
+    const L = window.L;
+    
+    const map = L.map(mapContainerRef.current).setView([12.9716, 77.5946], 11);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors',
+      maxZoom: 19,
+    }).addTo(map);
+
+    mapRef.current = map;
+    updateMapMarkers();
+  };
+
+  const updateMapMarkers = () => {
+    if (!mapRef.current || !window.L) return;
+
+    const L = window.L;
+
+    // Clear existing markers
+    markersRef.current.forEach(marker => {
+      mapRef.current.removeLayer(marker);
+    });
+    markersRef.current = [];
+
+    // Add markers for each alert
+    alerts.forEach((alert) => {
+      const severityColors: Record<string, { color: string; emoji: string }> = {
+        critical: { color: '#dc2626', emoji: '🔴' },
+        high: { color: '#ea580c', emoji: '🟠' },
+        medium: { color: '#ca8a04', emoji: '🟡' },
+        low: { color: '#2563eb', emoji: '🔵' },
+      };
+
+      const { color, emoji } = severityColors[alert.severity] || severityColors.medium;
+
+      // Add circle for radius
+      const circle = L.circle([alert.location.lat, alert.location.lng], {
+        color: color,
+        fillColor: color,
+        fillOpacity: 0.15,
+        radius: alert.radius * 1000,
+        weight: 2,
+      }).addTo(mapRef.current);
+
+      // Add marker
+      const marker = L.marker([alert.location.lat, alert.location.lng], {
+        icon: L.divIcon({
+          className: 'custom-alert-marker',
+          html: `<div style="font-size: 24px;">${emoji}</div>`,
+          iconSize: [24, 24],
+          iconAnchor: [12, 12],
+        })
+      }).addTo(mapRef.current);
+
+      // Add popup
+      const popupContent = `
+        <div style="min-width: 200px;">
+          <div style="font-weight: bold; color: ${color}; margin-bottom: 4px;">${alert.type}</div>
+          <div style="font-size: 12px; margin-bottom: 4px;">${alert.description}</div>
+          <div style="font-size: 11px; color: #666;">
+            <strong>Severity:</strong> ${alert.severity}<br/>
+            <strong>Radius:</strong> ${alert.radius} km<br/>
+            <strong>Location:</strong> ${alert.location.address}
+          </div>
+        </div>
+      `;
+      marker.bindPopup(popupContent);
+
+      markersRef.current.push(circle, marker);
+    });
+
+    // Add user location marker if exists
+    if (userLocation) {
+      const userMarker = L.marker([userLocation.lat, userLocation.lng], {
+        icon: L.divIcon({
+          className: 'custom-user-marker',
+          html: `<div style="font-size: 32px;">📍</div>`,
+          iconSize: [32, 32],
+          iconAnchor: [16, 32],
+        })
+      }).addTo(mapRef.current);
+
+      userMarker.bindPopup(`<div style="font-weight: bold;">Your Location</div><div style="font-size: 12px;">${userLocation.name}</div>`);
+      markersRef.current.push(userMarker);
+    }
+
+    // Fit bounds to show all markers
+    if (alerts.length > 0) {
+      const bounds = L.latLngBounds(alerts.map(alert => [alert.location.lat, alert.location.lng]));
+      mapRef.current.fitBounds(bounds, { padding: [50, 50] });
+    }
+  };
+
+  // Update markers when alerts change
+  useEffect(() => {
+    if (mapRef.current && viewMode === 'map') {
+      updateMapMarkers();
+    }
+  }, [alerts, userLocation, viewMode]);
+
+  // Initialize map when switching to map view
+  useEffect(() => {
+    if (viewMode === 'map' && !mapRef.current) {
+      setTimeout(() => {
+        initializeMap();
+      }, 100);
+    }
+  }, [viewMode]);
+
+  const calculateDistance = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = 
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
+
+  const relevantAlerts = userLocation ? alerts.filter(alert => {
+    const distance = calculateDistance(
+      userLocation.lat,
+      userLocation.lng,
+      alert.location.lat,
+      alert.location.lng
+    );
+    return distance <= alert.radius;
+  }) : [];
+
+  const getSeverityColor = (severity: string) => {
+    switch (severity) {
+      case 'critical': return 'bg-red-600 border-red-700';
+      case 'high': return 'bg-orange-600 border-orange-700';
+      case 'medium': return 'bg-yellow-600 border-yellow-700';
+      case 'low': return 'bg-blue-600 border-blue-700';
+      default: return 'bg-gray-600 border-gray-700';
+    }
+  };
+
+  const getSeverityText = (severity: string) => {
+    switch (severity) {
+      case 'critical': return 'text-red-600';
+      case 'high': return 'text-orange-600';
+      case 'medium': return 'text-yellow-600';
+      case 'low': return 'text-blue-600';
+      default: return 'text-gray-600';
+    }
+  };
+
+  const getTimeAgo = (date: Date) => {
+    const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
+    
+    if (seconds < 60) return `${seconds}${t('secondsAgo')}`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}${t('minutesAgo')}`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}${t('hoursAgo')}`;
+    return `${Math.floor(seconds / 86400)}${t('daysAgo')}`;
+  };
+
+  const mockLocations = [
+    { name: 'Bangalore City Center', lat: 12.9716, lng: 77.5946 },
+    { name: 'Koramangala', lat: 12.9352, lng: 77.6245 },
+    { name: 'Indiranagar', lat: 12.9719, lng: 77.6412 },
+    { name: 'Whitefield', lat: 12.9698, lng: 77.7500 },
+  ];
+
+  return (
+    <div className="max-w-7xl mx-auto">
+      <div className="grid lg:grid-cols-3 gap-6">
+        {/* Sidebar */}
+        <div className="lg:col-span-1 space-y-6">
+          {/* Notification Settings */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                {notificationsEnabled ? (
+                  <Bell className="w-5 h-5 text-green-600" />
+                ) : (
+                  <BellOff className="w-5 h-5 text-gray-400" />
+                )}
+                <div>
+                  <h3 className="text-gray-900">{t('emergencyNotifications')}</h3>
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={() => setNotificationsEnabled(!notificationsEnabled)}
+              className={`w-full px-4 py-2 rounded-lg transition-colors ${
+                notificationsEnabled
+                  ? 'bg-green-600 text-white hover:bg-green-700'
+                  : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+              }`}
+            >
+              {notificationsEnabled ? t('enabled') : t('disabled')}
+            </button>
+          </div>
+
+          {/* Location Selector */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <Navigation className="w-5 h-5 text-blue-600" />
+              <h3 className="text-gray-900">{t('yourLocation')}</h3>
+            </div>
+            <div className="space-y-2">
+              {mockLocations.map((loc) => (
+                <button
+                  key={loc.name}
+                  onClick={() => setUserLocation({ ...loc, name: loc.name })}
+                  className={`w-full px-4 py-3 rounded-lg border-2 text-left transition-colors ${
+                    userLocation?.name === loc.name
+                      ? 'border-blue-600 bg-blue-50 text-blue-700'
+                      : 'border-gray-300 hover:border-gray-400 text-gray-700'
+                  }`}
+                >
+                  <MapPin className="w-4 h-4 inline mr-1" />
+                  {loc.name}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Alert Summary */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+            <h3 className="text-gray-900 mb-4 flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-red-600" />
+              Alert Summary
+            </h3>
+            <div className="space-y-3">
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-gray-600">Total Alerts:</span>
+                <span className="px-3 py-1 bg-gray-100 rounded-full text-sm">{alerts.length}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-gray-600">Alerts Near You:</span>
+                <span className={`px-3 py-1 rounded-full text-sm ${
+                  relevantAlerts.length > 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
+                }`}>
+                  {relevantAlerts.length}
+                </span>
+              </div>
+              <div className="pt-3 border-t border-gray-200">
+                <div className="space-y-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1">🔴 Critical</span>
+                    <span>{alerts.filter(a => a.severity === 'critical').length}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1">🟠 High</span>
+                    <span>{alerts.filter(a => a.severity === 'high').length}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1">🟡 Medium</span>
+                    <span>{alerts.filter(a => a.severity === 'medium').length}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1">🔵 Low</span>
+                    <span>{alerts.filter(a => a.severity === 'low').length}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Main Content */}
+        <div className="lg:col-span-2">
+          {/* View Toggle */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
+            <div className="flex gap-2">
+              <button
+                onClick={() => setViewMode('map')}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+                  viewMode === 'map'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                <Map className="w-4 h-4" />
+                Map View
+              </button>
+              <button
+                onClick={() => setViewMode('list')}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+                  viewMode === 'list'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                <List className="w-4 h-4" />
+                List View
+              </button>
+            </div>
+          </div>
+
+          {/* Alerts Near You Banner */}
+          {notificationsEnabled && relevantAlerts.length > 0 && (
+            <div className="mb-6">
+              <div className="bg-red-600 text-white p-4 rounded-xl shadow-lg flex items-center gap-3 animate-pulse">
+                <AlertTriangle className="w-6 h-6" />
+                <div>
+                  <p className="font-semibold">⚠️ {t('emergencyAlert')}</p>
+                  <p className="text-sm">{relevantAlerts.length} {t('activeAlertsInArea')}</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Map View */}
+          {viewMode === 'map' && (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+              <div className="bg-gray-900 text-white px-6 py-3 flex items-center justify-between">
+                <h3 className="flex items-center gap-2">
+                  <Map className="w-5 h-5" />
+                  Emergency Locations Map
+                </h3>
+                <span className="text-sm text-gray-300">{alerts.length} active alerts</span>
+              </div>
+              {alerts.length === 0 ? (
+                <div className="p-12 text-center text-gray-500">
+                  <Map className="w-16 h-16 mx-auto mb-3 text-gray-300" />
+                  <p>{t('noAlertsInArea')}</p>
+                  <p className="text-sm mt-1">{t('staySafe')}</p>
+                </div>
+              ) : (
+                <div
+                  ref={mapContainerRef}
+                  className="w-full h-[600px]"
+                  style={{ zIndex: 1 }}
+                />
+              )}
+            </div>
+          )}
+
+          {/* List View */}
+          {viewMode === 'list' && (
+            <div className="space-y-4">
+              {!notificationsEnabled ? (
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+                  <BellOff className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                  <p className="text-gray-600">{t('enableNotifications')}</p>
+                </div>
+              ) : alerts.length === 0 ? (
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+                  <AlertTriangle className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                  <p className="text-gray-600">{t('noAlertsInArea')}</p>
+                  <p className="text-sm text-gray-500 mt-1">{t('staySafe')}</p>
+                </div>
+              ) : (
+                alerts.map((alert) => {
+                  const distance = userLocation ? calculateDistance(
+                    userLocation.lat,
+                    userLocation.lng,
+                    alert.location.lat,
+                    alert.location.lng
+                  ) : 0;
+
+                  const isNearby = distance <= alert.radius;
+
+                  return (
+                    <div
+                      key={alert.id}
+                      className={`bg-white rounded-xl shadow-lg overflow-hidden ${
+                        isNearby ? 'border-2 border-red-500' : 'border border-gray-200'
+                      }`}
+                    >
+                      {isNearby && (
+                        <div className="bg-red-600 text-white px-4 py-2 text-sm flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4" />
+                          <span className="font-semibold">This alert affects your area!</span>
+                        </div>
+                      )}
+                      
+                      <div className={`${getSeverityColor(alert.severity)} text-white px-6 py-4`}>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <AlertTriangle className="w-6 h-6" />
+                            <div>
+                              <h3 className="font-semibold uppercase tracking-wide">{alert.type}</h3>
+                              <p className="text-sm opacity-90">{t(alert.severity as any)}</p>
+                            </div>
+                          </div>
+                          <Clock className="w-5 h-5" />
+                        </div>
+                      </div>
+
+                      <div className="p-6">
+                        <div className="mb-4">
+                          {isNearby && (
+                            <p className={`text-xl mb-2 ${getSeverityText(alert.severity)}`}>
+                              {t('notSafe')}
+                            </p>
+                          )}
+                          <p className="text-gray-700">{alert.description}</p>
+                        </div>
+
+                        <div className="space-y-2 text-sm bg-gray-50 p-4 rounded-lg">
+                          <div className="flex items-center gap-2 text-gray-600">
+                            <MapPin className="w-4 h-4" />
+                            <span>{t('emergencyLocation')}: {alert.location.address}</span>
+                          </div>
+                          <div className="flex items-center gap-2 text-gray-600">
+                            <Navigation className="w-4 h-4" />
+                            <span>{t('distanceFromYou')}: ~{distance.toFixed(2)} km</span>
+                          </div>
+                          <div className="flex items-center gap-2 text-gray-600">
+                            <Clock className="w-4 h-4" />
+                            <span>{t('reported')} {getTimeAgo(alert.timestamp)}</span>
+                          </div>
+                        </div>
+
+                        {isNearby && (
+                          <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                            <p className="text-sm text-yellow-900">
+                              <span className="font-semibold">{t('safetyInstructions')}:</span>
+                              <br />
+                              {t('avoidArea')}
+                              <br />
+                              {t('followAuthorities')}
+                              <br />
+                              {t('stayIndoors')}
+                              <br />
+                              {t('keepMonitoring')}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
